@@ -2,8 +2,6 @@
 - name: Aktualizacja systemu
   hosts: serwery
   become: true
-  become_user: root
-  become_method: sudo
 
   tasks:
     - name: Aktualizacja listy pakietów
@@ -14,6 +12,7 @@
     - name: Upgrade systemu
       ansible.builtin.apt:
         upgrade: dist
+      register: upgrade_result
 
     - name: Sprawdź czy wymagany restart
       ansible.builtin.stat:
@@ -25,3 +24,14 @@
         msg: "Restart po aktualizacji systemu"
         reboot_timeout: 600
       when: reboot_required.stat.exists
+
+  post_tasks:
+    - name: Podsumowanie
+      ansible.builtin.debug:
+        msg:
+          - "===================================="
+          - "Host: {{ inventory_hostname }}"
+          - "Pakiety zmienione: {{ upgrade_result.changed }}"
+          - "Restart wykonany: {{ reboot_required.stat.exists }}"
+          - "Aktualizacja zakończona."
+          - "===================================="
