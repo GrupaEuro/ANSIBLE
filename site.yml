@@ -2,6 +2,7 @@
 - name: Aktualizacja systemu
   hosts: serwery
   become: true
+  become_method: sudo
 
   tasks:
     - name: Aktualizacja listy pakietów
