@@ -6,3 +6,7 @@
     - name: Wyświetl nazwę hosta
       ansible.builtin.command: hostname
       register: wynik
+
+    - name: Pokaż wynik
+      ansible.builtin.debug:
+        var: wynik.stdout
