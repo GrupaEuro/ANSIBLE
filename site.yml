@@ -1,0 +1,8 @@
+---
+- hosts: my_servers
+  gather_facts: false
+
+  tasks:
+    - name: Wyświetl nazwę hosta
+      ansible.builtin.command: hostname
+      register: wynik
