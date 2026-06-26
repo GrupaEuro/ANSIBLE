@@ -6,16 +6,22 @@
   become_method: sudo
 
   tasks:
-    - name: Kim jestem
-      ansible.builtin.command: whoami
-      register: who
-      changed_when: false
-
-    - name: Pokaż użytkownika
-      ansible.builtin.debug:
-        var: who.stdout
-
     - name: Aktualizacja listy pakietów
       ansible.builtin.apt:
         update_cache: yes
         cache_valid_time: 3600
+
+    - name: Upgrade systemu
+      ansible.builtin.apt:
+        upgrade: dist
+
+    - name: Sprawdź czy wymagany restart
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Restart jeśli wymagany
+      ansible.builtin.reboot:
+        msg: "Restart po aktualizacji systemu"
+        reboot_timeout: 600
+      when: reboot_required.stat.exists
