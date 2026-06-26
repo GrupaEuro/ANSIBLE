@@ -2,6 +2,8 @@
 - name: Aktualizacja systemu
   hosts: serwery
   become: true
+  become_user: root
+  become_method: sudo
 
   tasks:
     - name: Aktualizacja listy pakietów
@@ -29,9 +31,7 @@
     - name: Podsumowanie
       ansible.builtin.debug:
         msg:
-          - "===================================="
           - "Host: {{ inventory_hostname }}"
           - "Pakiety zmienione: {{ upgrade_result.changed }}"
           - "Restart wykonany: {{ reboot_required.stat.exists }}"
           - "Aktualizacja zakończona."
-          - "===================================="
