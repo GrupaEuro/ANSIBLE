@@ -1,6 +1,6 @@
 ---
 - name: Aktualizacja Windows bez automatycznego restartu
-  hosts: windows
+  hosts: Windows
   gather_facts: no
 
   tasks:
