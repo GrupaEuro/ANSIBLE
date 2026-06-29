@@ -1,0 +1,24 @@
+---
+- name: Aktualizacja Windows bez automatycznego restartu
+  hosts: windows
+  gather_facts: no
+
+  tasks:
+    - name: Instaluj aktualizacje Windows
+      ansible.windows.win_updates:
+        category_names:
+          - CriticalUpdates
+          - SecurityUpdates
+          - UpdateRollups
+        state: installed
+        reboot: no
+      register: win_update_result
+
+    - name: Pokaż wynik aktualizacji
+      ansible.builtin.debug:
+        var: win_update_result
+
+    - name: Informacja, jeśli wymagany jest restart
+      ansible.builtin.debug:
+        msg: "Host {{ inventory_hostname }} wymaga restartu po aktualizacjach."
+      when: win_update_result.reboot_required
