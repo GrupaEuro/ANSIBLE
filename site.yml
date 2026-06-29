@@ -1,6 +1,6 @@
 ---
 - name: Aktualizacja systemu
-  hosts: serwery
+  hosts: Linux
   become: true
   become_user: root
   become_method: sudo
