@@ -35,3 +35,27 @@
           - "Pakiety zmienione: {{ upgrade_result.changed }}"
           - "Restart wykonany: {{ reboot_required.stat.exists }}"
           - "Aktualizacja zakończona."
+
+    - name: Wyślij raport e-mail
+      delegate_to: localhost
+      community.general.mail:
+        host: "{{ lookup('env', 'SMTP_HOST') }}"
+        port: "{{ lookup('env', 'SMTP_PORT') | int }}"
+        secure: starttls
+        username: "{{ lookup('env', 'SMTP_USER') }}"
+        password: "{{ lookup('env', 'SMTP_PASS') }}"
+        from: "{{ lookup('env', 'SMTP_FROM') }}"
+        to: "{{ lookup('env', 'SMTP_TO') }}"
+        subject: "Linux Update - {{ inventory_hostname }}"
+        body: |
+          Aktualizacja zakończona.
+
+          Host: {{ inventory_hostname }}
+
+          Pakiety zostały zaktualizowane:
+          {{ 'TAK' if upgrade_result.changed else 'NIE' }}
+
+          Restart wykonany:
+          {{ 'TAK' if reboot_required.stat.exists else 'NIE' }}
+
+          Status: OK
