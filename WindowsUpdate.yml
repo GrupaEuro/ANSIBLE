@@ -13,6 +13,7 @@
         state: installed
         reboot: no
       register: win_update_result
+      ignore_errors: yes
 
     - name: Pokaż wynik aktualizacji
       ansible.builtin.debug:
@@ -21,7 +22,7 @@
     - name: Informacja, jeśli wymagany jest restart
       ansible.builtin.debug:
         msg: "Host {{ ansible_hostname }} wymaga restartu po aktualizacjach."
-      when: win_update_result.reboot_required
+      when: win_update_result.reboot_required | default(false)
 
   post_tasks:
     - name: Wyślij raport e-mail
@@ -34,7 +35,7 @@
         password: "{{ lookup('env', 'SMTP_PASS') }}"
         from: "{{ lookup('env', 'SMTP_FROM') }}"
         to: "{{ lookup('env', 'SMTP_TO') }}"
-        subject: "[Success] Windows Update - {{ ansible_hostname }}"
+        subject: "[{{ 'Failed' if win_update_result.failed | default(false) else 'Success' }}] Windows Update - {{ ansible_hostname }}"
         subtype: html
         body: |
           <html>
@@ -42,22 +43,21 @@
             <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f5f7;padding:24px;">
               <tr>
                 <td align="center">
-
                   <table width="720" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #d9dde2;">
 
                     <tr>
-                      <td style="background:#00b050;color:#ffffff;padding:18px 24px;font-size:22px;font-weight:bold;">
+                      <td style="background:{{ '#c00000' if win_update_result.failed | default(false) else '#00b050' }};color:#ffffff;padding:18px 24px;font-size:22px;font-weight:bold;">
                         Windows Update Report
                       </td>
                     </tr>
 
                     <tr>
                       <td style="padding:18px 24px;border-bottom:1px solid #e5e8eb;">
-                        <span style="display:inline-block;background:#e5f6ea;color:#107c10;border:1px solid #9fd6a8;padding:6px 12px;font-weight:bold;">
-                          SUCCESS
+                        <span style="display:inline-block;background:{{ '#fdeaea' if win_update_result.failed | default(false) else '#e5f6ea' }};color:{{ '#c00000' if win_update_result.failed | default(false) else '#107c10' }};border:1px solid {{ '#e0a0a0' if win_update_result.failed | default(false) else '#9fd6a8' }};padding:6px 12px;font-weight:bold;">
+                          {{ 'FAILED' if win_update_result.failed | default(false) else 'SUCCESS' }}
                         </span>
                         <span style="margin-left:12px;color:#666;">
-                          Aktualizacja zakończona poprawnie
+                          {{ 'Aktualizacja zakończona błędem' if win_update_result.failed | default(false) else 'Aktualizacja zakończona poprawnie' }}
                         </span>
                       </td>
                     </tr>
@@ -75,9 +75,7 @@
                           </tr>
                           <tr>
                             <td style="background:#f7f9fb;border:1px solid #dfe3e8;font-weight:bold;">System</td>
-                            <td style="border:1px solid #dfe3e8;">
-                              {{ ansible_distribution }} {{ ansible_distribution_version }}
-                            </td>
+                            <td style="border:1px solid #dfe3e8;">{{ ansible_distribution | default('Windows') }} {{ ansible_distribution_version | default('') }}</td>
                           </tr>
                         </table>
                       </td>
@@ -93,39 +91,39 @@
 
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Znaleziono aktualizacji</td>
-                            <td style="border:1px solid #dfe3e8;">
-                              {{ win_update_result.found_update_count | default(0) }}
-                            </td>
+                            <td style="border:1px solid #dfe3e8;">{{ win_update_result.found_update_count | default(0) }}</td>
                           </tr>
 
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Zainstalowano aktualizacji</td>
-                            <td style="border:1px solid #dfe3e8;">
-                              {{ win_update_result.installed_update_count | default(0) }}
-                            </td>
+                            <td style="border:1px solid #dfe3e8;">{{ win_update_result.installed_update_count | default(0) }}</td>
                           </tr>
 
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Nieudane aktualizacje</td>
-                            <td style="border:1px solid #dfe3e8;">
-                              {{ win_update_result.failed_update_count | default(0) }}
-                            </td>
+                            <td style="border:1px solid #dfe3e8;">{{ win_update_result.failed_update_count | default(0) }}</td>
                           </tr>
 
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Restart wymagany</td>
                             <td style="border:1px solid #dfe3e8;font-weight:bold;">
-                              {{ 'YES' if win_update_result.reboot_required else 'NO' }}
+                              {{ 'YES' if win_update_result.reboot_required | default(false) else 'NO' }}
                             </td>
                           </tr>
 
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Status</td>
-                            <td style="border:1px solid #dfe3e8;color:#107c10;font-weight:bold;">
-                              Success
+                            <td style="border:1px solid #dfe3e8;color:{{ '#c00000' if win_update_result.failed | default(false) else '#107c10' }};font-weight:bold;">
+                              {{ 'Failed' if win_update_result.failed | default(false) else 'Success' }}
                             </td>
                           </tr>
 
+                          {% if win_update_result.msg is defined %}
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Komunikat</td>
+                            <td style="border:1px solid #dfe3e8;">{{ win_update_result.msg }}</td>
+                          </tr>
+                          {% endif %}
                         </table>
                       </td>
                     </tr>
@@ -137,9 +135,13 @@
                     </tr>
 
                   </table>
-
                 </td>
               </tr>
             </table>
           </body>
           </html>
+
+    - name: Zakończ playbook błędem, jeśli aktualizacja się nie udała
+      ansible.builtin.fail:
+        msg: "Windows Update zakończony błędem: {{ win_update_result.msg | default('nieznany błąd') }}"
+      when: win_update_result.failed | default(false)
