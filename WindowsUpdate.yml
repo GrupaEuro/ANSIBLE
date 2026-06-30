@@ -1,7 +1,7 @@
 ---
 - name: Aktualizacja Windows bez automatycznego restartu
   hosts: Windows
-  gather_facts: no
+  gather_facts: yes
 
   tasks:
     - name: Instaluj aktualizacje Windows
@@ -20,5 +20,126 @@
 
     - name: Informacja, jeśli wymagany jest restart
       ansible.builtin.debug:
-        msg: "Host {{ inventory_hostname }} wymaga restartu po aktualizacjach."
+        msg: "Host {{ ansible_hostname }} wymaga restartu po aktualizacjach."
       when: win_update_result.reboot_required
+
+  post_tasks:
+    - name: Wyślij raport e-mail
+      delegate_to: localhost
+      community.general.mail:
+        host: "{{ lookup('env', 'SMTP_HOST') }}"
+        port: "{{ lookup('env', 'SMTP_PORT') | int }}"
+        secure: starttls
+        username: "{{ lookup('env', 'SMTP_USER') }}"
+        password: "{{ lookup('env', 'SMTP_PASS') }}"
+        from: "{{ lookup('env', 'SMTP_FROM') }}"
+        to: "{{ lookup('env', 'SMTP_TO') }}"
+        subject: "[Success] Windows Update - {{ ansible_hostname }}"
+        subtype: html
+        body: |
+          <html>
+          <body style="margin:0;padding:0;background:#f3f5f7;font-family:Arial,Helvetica,sans-serif;color:#333;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f5f7;padding:24px;">
+              <tr>
+                <td align="center">
+
+                  <table width="720" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #d9dde2;">
+
+                    <tr>
+                      <td style="background:#00b050;color:#ffffff;padding:18px 24px;font-size:22px;font-weight:bold;">
+                        Windows Update Report
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:18px 24px;border-bottom:1px solid #e5e8eb;">
+                        <span style="display:inline-block;background:#e5f6ea;color:#107c10;border:1px solid #9fd6a8;padding:6px 12px;font-weight:bold;">
+                          SUCCESS
+                        </span>
+                        <span style="margin-left:12px;color:#666;">
+                          Aktualizacja zakończona poprawnie
+                        </span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:20px 24px;">
+                        <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
+                          <tr>
+                            <td style="width:220px;background:#f7f9fb;border:1px solid #dfe3e8;font-weight:bold;">Host</td>
+                            <td style="border:1px solid #dfe3e8;">{{ ansible_hostname }}</td>
+                          </tr>
+                          <tr>
+                            <td style="background:#f7f9fb;border:1px solid #dfe3e8;font-weight:bold;">IP</td>
+                            <td style="border:1px solid #dfe3e8;">{{ ansible_default_ipv4.address | default(inventory_hostname) }}</td>
+                          </tr>
+                          <tr>
+                            <td style="background:#f7f9fb;border:1px solid #dfe3e8;font-weight:bold;">System</td>
+                            <td style="border:1px solid #dfe3e8;">
+                              {{ ansible_distribution }} {{ ansible_distribution_version }}
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:0 24px 20px 24px;">
+                        <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
+                          <tr>
+                            <th align="left" style="background:#eef1f4;border:1px solid #dfe3e8;">Element</th>
+                            <th align="left" style="background:#eef1f4;border:1px solid #dfe3e8;">Wynik</th>
+                          </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Znaleziono aktualizacji</td>
+                            <td style="border:1px solid #dfe3e8;">
+                              {{ win_update_result.found_update_count | default(0) }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Zainstalowano aktualizacji</td>
+                            <td style="border:1px solid #dfe3e8;">
+                              {{ win_update_result.installed_update_count | default(0) }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Nieudane aktualizacje</td>
+                            <td style="border:1px solid #dfe3e8;">
+                              {{ win_update_result.failed_update_count | default(0) }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Restart wymagany</td>
+                            <td style="border:1px solid #dfe3e8;font-weight:bold;">
+                              {{ 'YES' if win_update_result.reboot_required else 'NO' }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Status</td>
+                            <td style="border:1px solid #dfe3e8;color:#107c10;font-weight:bold;">
+                              Success
+                            </td>
+                          </tr>
+
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="background:#f7f9fb;border-top:1px solid #dfe3e8;padding:12px 24px;color:#777;font-size:12px;">
+                        Report generated automatically by Ansible Semaphore.
+                      </td>
+                    </tr>
+
+                  </table>
+
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
