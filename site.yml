@@ -1,6 +1,7 @@
 ---
 - name: Aktualizacja systemu
   hosts: Linux
+  gather_facts: yes
   become: true
   become_user: root
   become_method: sudo
@@ -10,32 +11,33 @@
       ansible.builtin.apt:
         update_cache: yes
         cache_valid_time: 3600
+      register: apt_update_result
+      ignore_errors: yes
 
     - name: Upgrade systemu
       ansible.builtin.apt:
         upgrade: dist
       register: upgrade_result
+      ignore_errors: yes
 
     - name: Sprawdź czy wymagany restart
       ansible.builtin.stat:
         path: /var/run/reboot-required
       register: reboot_required
+      ignore_errors: yes
 
     - name: Restart jeśli wymagany
       ansible.builtin.reboot:
         msg: "Restart po aktualizacji systemu"
         reboot_timeout: 600
-      when: reboot_required.stat.exists
+      register: reboot_result
+      when:
+        - reboot_required is defined
+        - reboot_required.stat is defined
+        - reboot_required.stat.exists
+      ignore_errors: yes
 
   post_tasks:
-    - name: Podsumowanie
-      ansible.builtin.debug:
-        msg:
-          - "Host: {{ inventory_hostname }}"
-          - "Pakiety zmienione: {{ upgrade_result.changed }}"
-          - "Restart wykonany: {{ reboot_required.stat.exists }}"
-          - "Aktualizacja zakończona."
-
     - name: Wyślij raport e-mail
       delegate_to: localhost
       community.general.mail:
@@ -46,9 +48,10 @@
         password: "{{ lookup('env', 'SMTP_PASS') }}"
         from: "{{ lookup('env', 'SMTP_FROM') }}"
         to: "{{ lookup('env', 'SMTP_TO') }}"
-        subject: "[Success] Linux Update - {{ ansible_hostname }}"
+        subject: "[{{ 'Failed' if (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) or (reboot_required.failed | default(false)) or (reboot_result.failed | default(false)) else 'Success' }}] Linux Update - {{ ansible_hostname | default(inventory_hostname) }}"
         subtype: html
         body: |
+          {% set is_failed = (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) or (reboot_required.failed | default(false)) or (reboot_result.failed | default(false)) %}
           <html>
           <body style="margin:0;padding:0;background:#f3f5f7;font-family:Arial,Helvetica,sans-serif;color:#333;">
             <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f5f7;padding:24px;">
@@ -57,18 +60,18 @@
                   <table width="720" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #d9dde2;">
                     
                     <tr>
-                      <td style="background:#00b050;color:#ffffff;padding:18px 24px;font-size:22px;font-weight:bold;">
+                      <td style="background:{{ '#c00000' if is_failed else '#00b050' }};color:#ffffff;padding:18px 24px;font-size:22px;font-weight:bold;">
                         Linux Update Report
                       </td>
                     </tr>
 
                     <tr>
                       <td style="padding:18px 24px;border-bottom:1px solid #e5e8eb;">
-                        <span style="display:inline-block;background:#e5f6ea;color:#107c10;border:1px solid #9fd6a8;padding:6px 12px;font-weight:bold;">
-                          SUCCESS
+                        <span style="display:inline-block;background:{{ '#fdeaea' if is_failed else '#e5f6ea' }};color:{{ '#c00000' if is_failed else '#107c10' }};border:1px solid {{ '#e0a0a0' if is_failed else '#9fd6a8' }};padding:6px 12px;font-weight:bold;">
+                          {{ 'FAILED' if is_failed else 'SUCCESS' }}
                         </span>
                         <span style="margin-left:12px;color:#666;">
-                          Aktualizacja zakończona poprawnie
+                          {{ 'Aktualizacja zakończona błędem' if is_failed else 'Aktualizacja zakończona poprawnie' }}
                         </span>
                       </td>
                     </tr>
@@ -78,15 +81,15 @@
                         <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
                           <tr>
                             <td style="width:220px;background:#f7f9fb;border:1px solid #dfe3e8;font-weight:bold;">Host</td>
-                            <td style="border:1px solid #dfe3e8;">{{ ansible_hostname }}</td>
+                            <td style="border:1px solid #dfe3e8;">{{ ansible_hostname | default(inventory_hostname) }}</td>
                           </tr>
                           <tr>
                             <td style="background:#f7f9fb;border:1px solid #dfe3e8;font-weight:bold;">IP</td>
-                            <td style="border:1px solid #dfe3e8;">{{ ansible_default_ipv4.address }}</td>
+                            <td style="border:1px solid #dfe3e8;">{{ ansible_default_ipv4.address | default(inventory_hostname) }}</td>
                           </tr>
                           <tr>
                             <td style="background:#f7f9fb;border:1px solid #dfe3e8;font-weight:bold;">System</td>
-                            <td style="border:1px solid #dfe3e8;">{{ ansible_distribution }} {{ ansible_distribution_version }}</td>
+                            <td style="border:1px solid #dfe3e8;">{{ ansible_distribution | default('Linux') }} {{ ansible_distribution_version | default('') }}</td>
                           </tr>
                         </table>
                       </td>
@@ -99,22 +102,69 @@
                             <th align="left" style="background:#eef1f4;border:1px solid #dfe3e8;">Element</th>
                             <th align="left" style="background:#eef1f4;border:1px solid #dfe3e8;">Wynik</th>
                           </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Aktualizacja listy pakietów</td>
+                            <td style="border:1px solid #dfe3e8;font-weight:bold;">
+                              {{ 'FAILED' if apt_update_result.failed | default(false) else 'OK' }}
+                            </td>
+                          </tr>
+
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Pakiety zaktualizowane</td>
                             <td style="border:1px solid #dfe3e8;font-weight:bold;">
-                              {{ 'YES' if upgrade_result.changed else 'NO' }}
+                              {{ 'YES' if upgrade_result.changed | default(false) else 'NO' }}
                             </td>
                           </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Upgrade systemu</td>
+                            <td style="border:1px solid #dfe3e8;font-weight:bold;">
+                              {{ 'FAILED' if upgrade_result.failed | default(false) else 'OK' }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Restart wymagany</td>
+                            <td style="border:1px solid #dfe3e8;font-weight:bold;">
+                              {{ 'YES' if reboot_required.stat.exists | default(false) else 'NO' }}
+                            </td>
+                          </tr>
+
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Restart wykonany</td>
                             <td style="border:1px solid #dfe3e8;font-weight:bold;">
-                              {{ 'YES' if reboot_required.stat.exists else 'NO' }}
+                              {{ 'YES' if reboot_result.changed | default(false) else 'NO' }}
                             </td>
                           </tr>
+
                           <tr>
                             <td style="border:1px solid #dfe3e8;">Status</td>
-                            <td style="border:1px solid #dfe3e8;color:#107c10;font-weight:bold;">Success</td>
+                            <td style="border:1px solid #dfe3e8;color:{{ '#c00000' if is_failed else '#107c10' }};font-weight:bold;">
+                              {{ 'Failed' if is_failed else 'Success' }}
+                            </td>
                           </tr>
+
+                          {% if apt_update_result.msg is defined %}
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Błąd apt update</td>
+                            <td style="border:1px solid #dfe3e8;">{{ apt_update_result.msg }}</td>
+                          </tr>
+                          {% endif %}
+
+                          {% if upgrade_result.msg is defined %}
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Błąd upgrade</td>
+                            <td style="border:1px solid #dfe3e8;">{{ upgrade_result.msg }}</td>
+                          </tr>
+                          {% endif %}
+
+                          {% if reboot_result.msg is defined %}
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">Komunikat restartu</td>
+                            <td style="border:1px solid #dfe3e8;">{{ reboot_result.msg }}</td>
+                          </tr>
+                          {% endif %}
                         </table>
                       </td>
                     </tr>
@@ -131,3 +181,12 @@
             </table>
           </body>
           </html>
+
+    - name: Zakończ playbook błędem, jeśli aktualizacja się nie udała
+      ansible.builtin.fail:
+        msg: "Linux Update zakończony błędem."
+      when:
+        - (apt_update_result.failed | default(false)) or
+          (upgrade_result.failed | default(false)) or
+          (reboot_required.failed | default(false)) or
+          (reboot_result.failed | default(false))
