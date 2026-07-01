@@ -11,7 +11,8 @@
           - SecurityUpdates
           - UpdateRollups
         state: installed
-        reboot: no
+        reboot: yes
+        reboot_timeout: 3600
       register: win_update_result
       ignore_errors: yes
 
