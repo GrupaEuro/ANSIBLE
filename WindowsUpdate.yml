@@ -36,7 +36,7 @@
         password: "{{ lookup('env', 'SMTP_PASS') }}"
         from: "{{ lookup('env', 'SMTP_FROM') }}"
         to: "{{ lookup('env', 'SMTP_TO') }}"
-        subject: "[{{ 'Failed' if win_update_result.failed | default(false) else 'Success' }}] Windows Update - {{ ansible_hostname }}"
+        subject: "[{{ 'Failed' if win_update_result.failed | default(false) else 'Success' }}][{{ lookup('env', 'COMPANY_NAME') }}] Windows Update - {{ ansible_hostname }}"
         subtype: html
         body: |
           <html>
