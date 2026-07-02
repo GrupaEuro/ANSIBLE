@@ -45,7 +45,7 @@
         password: "{{ lookup('env', 'SMTP_PASS') }}"
         from: "{{ lookup('env', 'SMTP_FROM') }}"
         to: "{{ lookup('env', 'SMTP_TO') }}"
-        subject: "[{{ 'Failed' if (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) or (reboot_required.failed | default(false)) or (reboot_result.failed | default(false)) else 'Success' }}] Linux Update - {{ ansible_hostname | default(inventory_hostname) }}"
+        subject: "[{{ 'Failed' if (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) or (reboot_required.failed | default(false)) or (reboot_result.failed | default(false)) else 'Success' }}][{{ lookup('env', 'COMPANY_NAME') }}] Linux Update - {{ ansible_hostname | default(inventory_hostname) }}"
         subtype: html
         body: |
           {% set is_failed = (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) or (reboot_required.failed | default(false)) or (reboot_result.failed | default(false)) %}
