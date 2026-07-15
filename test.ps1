@@ -1,24 +1,23 @@
-
 <#
 .SYNOPSIS
-    Pobiera i aplikuje DriverPack do obrazu offline Windows.
+    Downloads and applies a DriverPack to an offline Windows image.
 
 .DESCRIPTION
-    Skrypt:
-      - wykrywa partycję z offline Windows,
-      - wykrywa producenta i model komputera,
-      - pobiera katalog DriverPacków OSDeploy,
-      - dopasowuje odpowiedni DriverPack,
-      - pobiera i weryfikuje pakiet,
-      - rozpakowuje sterowniki,
-      - dodaje sterowniki do obrazu offline przez DISM,
-      - zapisuje przebieg działania do pliku logu.
+    The script:
+      - detects the offline Windows partition,
+      - detects the computer manufacturer and model,
+      - downloads the OSDeploy DriverPack catalog,
+      - matches the correct DriverPack,
+      - downloads and verifies the package,
+      - extracts the drivers,
+      - adds the drivers to the offline image using DISM,
+      - writes execution details to a log file.
 
-    Skrypt nie korzysta z:
+    The script does not use:
       - Microsoft.SMS.TSEnvironment,
       - Microsoft.SMS.TSProgressUI,
-      - zmiennych Task Sequence,
-      - modułu OSDCloud.
+      - Task Sequence variables,
+      - the OSDCloud module.
 
 .EXAMPLE
     PowerShell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -67,7 +66,7 @@ function Initialize-Logging {
         Remove-Item -LiteralPath $script:LogFile -Force
     }
 
-    Write-Log -Message 'Uruchomiono instalację DriverPack.'
+    Write-Log -Message 'DriverPack installation started.'
 }
 
 
@@ -95,7 +94,7 @@ function Write-Log {
                 -Encoding UTF8
         }
         catch {
-            Write-Warning "Nie można zapisać do pliku logu: $($_.Exception.Message)"
+            Write-Warning "Unable to write to the log file: $($_.Exception.Message)"
         }
     }
 }
@@ -110,8 +109,8 @@ function Download-File {
         [string]$Destination
     )
 
-    Write-Log -Message "Pobieranie: $Url"
-    Write-Log -Message "Plik docelowy: $Destination"
+    Write-Log -Message "Downloading: $Url"
+    Write-Log -Message "Destination file: $Destination"
 
     $DestinationDirectory = Split-Path -Path $Destination -Parent
 
@@ -140,7 +139,7 @@ function Download-File {
             $Url
 
         if ($LASTEXITCODE -ne 0) {
-            throw "curl.exe zakończył pracę kodem $LASTEXITCODE."
+            throw "curl.exe exited with code $LASTEXITCODE."
         }
     }
     else {
@@ -151,17 +150,17 @@ function Download-File {
     }
 
     if (-not (Test-Path -LiteralPath $Destination)) {
-        throw "Nie pobrano pliku: $Destination"
+        throw "File was not downloaded: $Destination"
     }
 
     $DownloadedFile = Get-Item -LiteralPath $Destination
 
     if ($DownloadedFile.Length -eq 0) {
-        throw "Pobrany plik jest pusty: $Destination"
+        throw "Downloaded file is empty: $Destination"
     }
 
     Write-Log -Message (
-        'Pobrano plik. Rozmiar: {0:N2} MB' -f `
+        'File downloaded. Size: {0:N2} MB' -f `
         ($DownloadedFile.Length / 1MB)
     )
 }
@@ -205,12 +204,12 @@ function Find-OfflineWindows {
         }
     }
 
-    throw 'Nie znaleziono partycji zawierającej offline Windows.'
+    throw 'No offline Windows partition was found.'
 }
 
 
 function Get-HardwareData {
-    Write-Log -Message 'Odczytywanie danych sprzętowych.'
+    Write-Log -Message 'Reading hardware information.'
 
     try {
         $ComputerSystem = Get-CimInstance `
@@ -227,7 +226,7 @@ function Get-HardwareData {
     }
     catch {
         Write-Log `
-            -Message 'Get-CimInstance niedostępny. Używam Get-WmiObject.' `
+            -Message 'Get-CimInstance is unavailable. Falling back to Get-WmiObject.' `
             -Level 'WARN'
 
         $ComputerSystem = Get-WmiObject `
@@ -318,11 +317,11 @@ function Find-DriverPack {
         Select-Object -Unique
 
     if (-not $Identifiers) {
-        throw 'Nie udało się ustalić identyfikatorów sprzętu.'
+        throw 'Unable to determine hardware identifiers.'
     }
 
     Write-Log -Message (
-        'Identyfikatory sprzętu: ' + `
+        'Hardware identifiers: ' + `
         ($Identifiers -join ' | ')
     )
 
@@ -359,7 +358,7 @@ function Find-DriverPack {
     }
 
     Write-Log -Message (
-        "Liczba pakietów zgodnych ze sprzętem: $(@($Matches).Count)"
+        "Number of hardware-matching packages: $(@($Matches).Count)"
     )
 
     $OSMatches = @(
@@ -377,7 +376,7 @@ function Find-DriverPack {
 
     if ($OSMatches.Count -gt 0) {
         Write-Log -Message (
-            "Liczba pakietów zgodnych z $OSVersion`: " +
+            "Number of packages matching $OSVersion`: " +
             $OSMatches.Count
         )
 
@@ -385,7 +384,7 @@ function Find-DriverPack {
     }
     else {
         Write-Log `
-            -Message "Nie znaleziono jednoznacznego wpisu dla $OSVersion. Używam najlepszego dopasowania sprzętowego." `
+            -Message "No exact operating system match was found for $OSVersion. Using the best hardware match." `
             -Level 'WARN'
     }
 
@@ -420,7 +419,7 @@ function Test-DriverPackHash {
 
     if (-not $DriverPack.HashMD5) {
         Write-Log `
-            -Message 'Brak sumy MD5 w katalogu DriverPack.' `
+            -Message 'The DriverPack catalog does not contain an MD5 hash for this package.' `
             -Level 'WARN'
 
         return
@@ -428,7 +427,7 @@ function Test-DriverPackHash {
 
     $ExpectedHash = ([string]$DriverPack.HashMD5).Trim().ToUpperInvariant()
 
-    Write-Log -Message 'Sprawdzanie sumy MD5 pakietu.'
+    Write-Log -Message 'Verifying package MD5 hash.'
 
     $ActualHash = (
         Get-FileHash `
@@ -436,17 +435,17 @@ function Test-DriverPackHash {
             -Algorithm MD5
     ).Hash.ToUpperInvariant()
 
-    Write-Log -Message "Oczekiwana suma MD5: $ExpectedHash"
-    Write-Log -Message "Obliczona suma MD5: $ActualHash"
+    Write-Log -Message "Expected MD5: $ExpectedHash"
+    Write-Log -Message "Calculated MD5: $ActualHash"
 
     if ($ActualHash -ne $ExpectedHash) {
         throw (
-            "Niepoprawna suma MD5. " +
-            "Oczekiwano $ExpectedHash, otrzymano $ActualHash."
+            "Invalid MD5 hash. " +
+            "Expected $ExpectedHash, received $ActualHash."
         )
     }
 
-    Write-Log -Message 'Suma MD5 jest poprawna.'
+    Write-Log -Message 'The MD5 hash is valid.'
 }
 
 
@@ -463,7 +462,7 @@ function Expand-DriverPack {
     )
 
     if (Test-Path -LiteralPath $ExtractPath) {
-        Write-Log -Message "Usuwanie starego katalogu: $ExtractPath"
+        Write-Log -Message "Removing existing extraction directory: $ExtractPath"
 
         Remove-Item `
             -LiteralPath $ExtractPath `
@@ -477,7 +476,7 @@ function Expand-DriverPack {
         -Force |
         Out-Null
 
-    Write-Log -Message "Rozpakowywanie pakietu do: $ExtractPath"
+    Write-Log -Message "Extracting package to: $ExtractPath"
 
     & $SevenZip `
         x `
@@ -488,11 +487,11 @@ function Expand-DriverPack {
     $SevenZipExitCode = $LASTEXITCODE
 
     Write-Log -Message (
-        "7-Zip zakończył pracę kodem $SevenZipExitCode."
+        "7-Zip exited with code $SevenZipExitCode."
     )
 
     if ($SevenZipExitCode -ne 0) {
-        throw "7-Zip zakończył pracę kodem $SevenZipExitCode."
+        throw "7-Zip exited with code $SevenZipExitCode."
     }
 
     $InfFiles = @(
@@ -505,11 +504,11 @@ function Expand-DriverPack {
     )
 
     if ($InfFiles.Count -eq 0) {
-        throw 'Po rozpakowaniu nie znaleziono żadnych plików INF.'
+        throw 'No INF files were found after extraction.'
     }
 
     Write-Log -Message (
-        "Liczba znalezionych plików INF: $($InfFiles.Count)"
+        "Number of INF files found: $($InfFiles.Count)"
     )
 
     return $InfFiles.Count
@@ -526,15 +525,15 @@ function Add-OfflineDrivers {
     )
 
     if (-not (Get-Command dism.exe -ErrorAction SilentlyContinue)) {
-        throw 'Nie znaleziono programu dism.exe.'
+        throw 'dism.exe was not found.'
     }
 
     Write-Log -Message (
-        "Dodawanie sterowników do obrazu: $OfflineDrive"
+        "Adding drivers to offline image: $OfflineDrive"
     )
 
     Write-Log -Message (
-        "Źródło sterowników: $DriverPath"
+        "Driver source: $DriverPath"
     )
 
     & dism.exe `
@@ -546,23 +545,23 @@ function Add-OfflineDrivers {
     $DismExitCode = $LASTEXITCODE
 
     Write-Log -Message (
-        "DISM zakończył pracę kodem $DismExitCode."
+        "DISM exited with code $DismExitCode."
     )
 
     if (
         $DismExitCode -ne 0 -and
         $DismExitCode -ne 3010
     ) {
-        throw "DISM zakończył pracę kodem $DismExitCode."
+        throw "DISM exited with code $DismExitCode."
     }
 
     if ($DismExitCode -eq 3010) {
         Write-Log `
-            -Message 'Sterowniki dodano poprawnie. Wymagany jest restart.' `
+            -Message 'Drivers were added successfully. A restart is required.' `
             -Level 'WARN'
     }
     else {
-        Write-Log -Message 'Sterowniki dodano poprawnie.'
+        Write-Log -Message 'Drivers were added successfully.'
     }
 }
 
@@ -577,13 +576,13 @@ function Remove-TemporaryFiles {
 
     if ($KeepFiles) {
         Write-Log `
-            -Message 'Pozostawiam pobrane i rozpakowane pliki.' `
+            -Message 'Downloaded and extracted files will be kept.' `
             -Level 'INFO'
 
         return
     }
 
-    Write-Log -Message 'Usuwanie plików tymczasowych.'
+    Write-Log -Message 'Removing temporary files.'
 
     foreach ($Path in @(
         $ExtractPath,
@@ -602,11 +601,11 @@ function Remove-TemporaryFiles {
                     -Force `
                     -ErrorAction Stop
 
-                Write-Log -Message "Usunięto: $Path"
+                Write-Log -Message "Removed: $Path"
             }
             catch {
                 Write-Log `
-                    -Message "Nie można usunąć $Path`: $($_.Exception.Message)" `
+                    -Message "Unable to remove $Path`: $($_.Exception.Message)" `
                     -Level 'WARN'
             }
         }
@@ -617,16 +616,16 @@ function Remove-TemporaryFiles {
 try {
     Initialize-Logging
 
-    Write-Log -Message "Katalog roboczy: $WorkDir"
-    Write-Log -Message "Wybrany system: $OSVersion"
+    Write-Log -Message "Working directory: $WorkDir"
+    Write-Log -Message "Selected operating system: $OSVersion"
 
     $OfflineDrive = Find-OfflineWindows
 
-    Write-Log -Message "Offline Windows: $OfflineDrive"
+    Write-Log -Message "Offline Windows drive: $OfflineDrive"
 
     $Hardware = Get-HardwareData
 
-    Write-Log -Message "Producent: $($Hardware.Manufacturer)"
+    Write-Log -Message "Manufacturer: $($Hardware.Manufacturer)"
     Write-Log -Message "Model: $($Hardware.Model)"
     Write-Log -Message "System SKU: $($Hardware.SystemSKU)"
     Write-Log -Message "Product Name: $($Hardware.ProductName)"
@@ -644,7 +643,7 @@ try {
         -Url $CatalogUrl `
         -Destination $CatalogFile
 
-    Write-Log -Message 'Wczytywanie katalogu DriverPack.'
+    Write-Log -Message 'Loading the DriverPack catalog.'
 
     try {
         $Catalog = Import-Clixml `
@@ -653,17 +652,17 @@ try {
     }
     catch {
         throw (
-            "Nie można wczytać katalogu DriverPack: " +
+            "Unable to load the DriverPack catalog: " +
             $_.Exception.Message
         )
     }
 
     if (-not $Catalog) {
-        throw 'Pobrany katalog DriverPack jest pusty.'
+        throw 'The downloaded DriverPack catalog is empty.'
     }
 
     Write-Log -Message (
-        "Liczba wpisów w katalogu: $(@($Catalog).Count)"
+        "Number of catalog entries: $(@($Catalog).Count)"
     )
 
     $DriverPack = Find-DriverPack `
@@ -672,7 +671,7 @@ try {
 
     if (-not $DriverPack) {
         throw (
-            "Nie znaleziono DriverPacka dla urządzenia: " +
+            "No DriverPack was found for device: " +
             "$($Hardware.Manufacturer) $($Hardware.Model)."
         )
     }
@@ -682,7 +681,7 @@ try {
     $DriverPackUrl = [string]$DriverPack.Url
 
     if (-not $DriverPackUrl) {
-        throw 'Wybrany wpis DriverPack nie zawiera adresu URL.'
+        throw 'The selected DriverPack entry does not contain a URL.'
     }
 
     if (-not $DriverPackFileName) {
@@ -692,12 +691,12 @@ try {
     }
 
     if (-not $DriverPackFileName) {
-        throw 'Nie można ustalić nazwy pliku DriverPack.'
+        throw 'Unable to determine the DriverPack file name.'
     }
 
-    Write-Log -Message "Wybrany DriverPack: $DriverPackName"
-    Write-Log -Message "Nazwa pliku: $DriverPackFileName"
-    Write-Log -Message "Adres URL: $DriverPackUrl"
+    Write-Log -Message "Selected DriverPack: $DriverPackName"
+    Write-Log -Message "File name: $DriverPackFileName"
+    Write-Log -Message "URL: $DriverPackUrl"
 
     $PackageFile = Join-Path `
         $WorkDir `
@@ -729,7 +728,7 @@ try {
         -SevenZip $SevenZip
 
     Write-Log -Message (
-        "Pakiet przygotowany do aplikowania. INF: $InfCount"
+        "Package is ready to be applied. INF files: $InfCount"
     )
 
     Add-OfflineDrivers `
@@ -743,10 +742,10 @@ try {
         -CatalogFile $CatalogFile
 
     Write-Log -Message (
-        "DriverPack został zastosowany poprawnie: $DriverPackName"
+        "DriverPack was applied successfully: $DriverPackName"
     )
 
-    Write-Log -Message 'Skrypt zakończył pracę poprawnie.'
+    Write-Log -Message 'The script completed successfully.'
 
     exit 0
 }
@@ -754,11 +753,11 @@ catch {
     $ErrorMessage = $_.Exception.Message
 
     Write-Log `
-        -Message "BŁĄD: $ErrorMessage" `
+        -Message "ERROR: $ErrorMessage" `
         -Level 'ERROR'
 
     Write-Log `
-        -Message "Szczegóły: $($_ | Out-String)" `
+        -Message "Details: $($_ | Out-String)" `
         -Level 'ERROR'
 
     exit 1
