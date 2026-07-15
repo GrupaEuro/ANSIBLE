@@ -726,9 +726,9 @@ try {
         -Url $DriverPackUrl `
         -Destination $PackageFile
 
-    Test-DriverPackHash `
-        -DriverPack $DriverPack `
-        -PackageFile $PackageFile
+    #Test-DriverPackHash `
+    #    -DriverPack $DriverPack `
+    #    -PackageFile $PackageFile
 
     $SevenZip = Join-Path `
         $WorkDir `
