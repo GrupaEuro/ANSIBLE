@@ -1,4 +1,4 @@
-```powershell
+
 <#
 .SYNOPSIS
     Pobiera i aplikuje DriverPack do obrazu offline Windows.
