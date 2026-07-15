@@ -417,15 +417,35 @@ function Test-DriverPackHash {
         [string]$PackageFile
     )
 
-    if (-not $DriverPack.HashMD5) {
+    $RawExpectedHash = $null
+
+    if ($DriverPack.PSObject.Properties.Name -contains 'HashMD5') {
+        $RawExpectedHash = $DriverPack.HashMD5
+    }
+
+    if (-not $RawExpectedHash) {
         Write-Log `
-            -Message 'The DriverPack catalog does not contain an MD5 hash for this package.' `
+            -Message 'The DriverPack catalog does not contain an MD5 hash. Hash verification will be skipped.' `
             -Level 'WARN'
 
         return
     }
 
-    $ExpectedHash = ([string]$DriverPack.HashMD5).Trim().ToUpperInvariant()
+    # Convert the catalog value to text.
+    $ExpectedHashText = [string]$RawExpectedHash
+
+    Write-Log -Message "Raw catalog MD5 value: $ExpectedHashText"
+
+    # A valid MD5 must contain exactly 32 hexadecimal characters.
+    if ($ExpectedHashText -notmatch '^[A-Fa-f0-9]{32}$') {
+        Write-Log `
+            -Message "The catalog MD5 value is invalid: $ExpectedHashText. Hash verification will be skipped." `
+            -Level 'WARN'
+
+        return
+    }
+
+    $ExpectedHash = $ExpectedHashText.ToUpperInvariant()
 
     Write-Log -Message 'Verifying package MD5 hash.'
 
