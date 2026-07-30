@@ -1,4 +1,3 @@
-```yaml
 ---
 - name: Aktualizacja Windows z automatycznym restartem i kontrolą profilu domenowego
   hosts: Windows
@@ -701,4 +700,3 @@
       when:
         - not update_failed
         - not domain_profile_detected
-```
