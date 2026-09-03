@@ -1,4 +1,3 @@
----
 - name: Aktualizacja Windows z automatycznym restartem i kontrolą profilu domenowego
   hosts: Windows
   gather_facts: yes
@@ -154,10 +153,161 @@
         )
 
     ###########################################################################
-    # KOŃCOWE SPRAWDZENIE PROFILU DOMENOWEGO
+    # SPRAWDZENIE PROFILU DOMENOWEGO PO RESTARCIE USŁUG
     ###########################################################################
 
     - name: Sprawdź profil sieci po restarcie usług
+      ansible.windows.win_powershell:
+        script: |
+          $profiles = @(
+              Get-NetConnectionProfile -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.IPv4Connectivity -notin @(
+                      'Disconnected',
+                      'NoTraffic'
+                  )
+              }
+          )
+
+          $domainProfiles = @(
+              $profiles |
+              Where-Object {
+                  $_.NetworkCategory -eq 'DomainAuthenticated'
+              }
+          )
+
+          $Ansible.Result = @{
+              DomainDetected = $domainProfiles.Count -gt 0
+              Profiles = @(
+                  $profiles | ForEach-Object {
+                      @{
+                          InterfaceAlias    = $_.InterfaceAlias
+                          InterfaceIndex    = $_.InterfaceIndex
+                          Name              = $_.Name
+                          NetworkCategory   = [string]$_.NetworkCategory
+                          IPv4Connectivity  = [string]$_.IPv4Connectivity
+                          IPv6Connectivity  = [string]$_.IPv6Connectivity
+                      }
+                  }
+              )
+          }
+
+          if ($domainProfiles.Count -gt 0) {
+              $Ansible.Changed = $false
+              $Ansible.Failed = $false
+          }
+          else {
+              $Ansible.Changed = $false
+              $Ansible.Failed = $true
+          }
+      register: domain_profile_after_services
+      changed_when: false
+      failed_when: false
+      retries: "{{ domain_profile_retries }}"
+      delay: "{{ domain_profile_delay }}"
+      until: >-
+        domain_profile_after_services.result.DomainDetected |
+        default(false) |
+        bool
+
+    ###########################################################################
+    # RESET KARTY SIECIOWEJ - TYLKO JEŚLI RESTART USŁUG NIE POMÓGŁ
+    ###########################################################################
+
+    - name: Wybierz aktywną kartę sieciową używaną przez trasę domyślną
+      ansible.windows.win_powershell:
+        script: |
+          $defaultRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+              Where-Object { $_.State -eq 'Alive' } |
+              Sort-Object RouteMetric, InterfaceMetric |
+              Select-Object -First 1
+
+          $adapter = $null
+          if ($null -ne $defaultRoute) {
+              $adapter = Get-NetAdapter -InterfaceIndex $defaultRoute.InterfaceIndex -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Status -eq 'Up' } |
+                  Select-Object -First 1
+          }
+
+          $Ansible.Result = @{
+              Found = $null -ne $adapter
+              Name = if ($null -ne $adapter) { $adapter.Name } else { $null }
+              InterfaceDescription = if ($null -ne $adapter) { $adapter.InterfaceDescription } else { $null }
+              InterfaceIndex = if ($null -ne $adapter) { $adapter.InterfaceIndex } else { $null }
+          }
+          $Ansible.Changed = $false
+      register: adapter_to_reset
+      changed_when: false
+      failed_when: false
+      when: >-
+        not (
+          domain_profile_after_services.result.DomainDetected |
+          default(false) |
+          bool
+        )
+
+    - name: Pokaż kartę wybraną do resetu
+      ansible.builtin.debug:
+        msg: >-
+          Do resetu wybrano kartę:
+          {{ adapter_to_reset.result.Name | default('nie znaleziono') }}
+          (index={{ adapter_to_reset.result.InterfaceIndex | default('n/a') }})
+      when: >-
+        not (
+          domain_profile_after_services.result.DomainDetected |
+          default(false) |
+          bool
+        )
+
+    - name: Zrestartuj aktywną kartę sieciową w tle
+      ansible.windows.win_powershell:
+        script: |
+          $index = {{ adapter_to_reset.result.InterfaceIndex | int }}
+          Restart-NetAdapter -InterfaceDescription (
+              Get-NetAdapter -InterfaceIndex $index -ErrorAction Stop
+          ).InterfaceDescription -Confirm:$false -ErrorAction Stop
+      async: 60
+      poll: 0
+      register: adapter_reset_async
+      failed_when: false
+      when:
+        - not (
+            domain_profile_after_services.result.DomainDetected |
+            default(false) |
+            bool
+          )
+        - adapter_to_reset.result.Found | default(false) | bool
+
+    - name: Poczekaj chwilę na rozpoczęcie resetu karty
+      ansible.builtin.pause:
+        seconds: 10
+      when:
+        - not (
+            domain_profile_after_services.result.DomainDetected |
+            default(false) |
+            bool
+          )
+        - adapter_to_reset.result.Found | default(false) | bool
+
+    - name: Poczekaj na ponowne połączenie po resecie karty sieciowej
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 10
+      register: connection_after_adapter_reset
+      ignore_errors: yes
+      when:
+        - not (
+            domain_profile_after_services.result.DomainDetected |
+            default(false) |
+            bool
+          )
+        - adapter_to_reset.result.Found | default(false) | bool
+
+    ###########################################################################
+    # KOŃCOWE SPRAWDZENIE PROFILU DOMENOWEGO
+    ###########################################################################
+
+    - name: Sprawdź końcowo profil sieci po wszystkich próbach naprawy
       ansible.windows.win_powershell:
         script: |
           $profiles = @(
@@ -237,6 +387,22 @@
               'nie był wymagany'
             }}
           - >-
+            Reset karty sieciowej:
+            {{
+              'wykonano - ' ~ (adapter_to_reset.result.Name | default('nieznana'))
+              if (
+                not (
+                  domain_profile_after_services.result.DomainDetected |
+                  default(false) |
+                  bool
+                )
+                and
+                (adapter_to_reset.result.Found | default(false) | bool)
+              )
+              else
+              'nie był wymagany'
+            }}
+          - >-
             Profile:
             {{
               final_domain_profile.result.Profiles |
@@ -272,6 +438,23 @@
               default(false) |
               bool
             )
+          }}
+
+        network_adapter_reset: >-
+          {{
+            not (
+              domain_profile_after_services.result.DomainDetected |
+              default(false) |
+              bool
+            )
+            and
+            (adapter_to_reset.result.Found | default(false) | bool)
+          }}
+
+        network_adapter_name: >-
+          {{
+            adapter_to_reset.result.Name |
+            default('nieznana')
           }}
 
         playbook_failed: >-
@@ -572,6 +755,21 @@
 
                           <tr>
                             <td style="border:1px solid #dfe3e8;">
+                              Reset karty sieciowej
+                            </td>
+
+                            <td style="border:1px solid #dfe3e8;">
+                              {{
+                                'WYKONANO - ' ~ network_adapter_name
+                                if network_adapter_reset
+                                else
+                                'NIE BYŁ WYMAGANY'
+                              }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">
                               Status końcowy sieci
                             </td>
 
@@ -689,9 +887,9 @@
     - name: Zakończ playbook błędem, jeśli nie wykryto profilu domenowego
       ansible.builtin.fail:
         msg: >-
-          Host {{ ansible_hostname }} po aktualizacjach oraz restarcie usług
-          Netlogon i NlaSvc nadal nie posiada aktywnego profilu
-          DomainAuthenticated. Aktualne profile:
+          Host {{ ansible_hostname }} po aktualizacjach, restarcie usług
+          Netlogon/NlaSvc oraz próbie resetu karty sieciowej nadal nie posiada
+          aktywnego profilu DomainAuthenticated. Aktualne profile:
           {{
             final_domain_profile.result.Profiles |
             default([]) |
