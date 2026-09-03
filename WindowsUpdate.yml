@@ -1,3 +1,4 @@
+---
 - name: Aktualizacja Windows z automatycznym restartem i kontrolą profilu domenowego
   hosts: Windows
   gather_facts: yes
