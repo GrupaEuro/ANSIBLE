@@ -5,7 +5,7 @@
 
   vars:
     # Ile razy sprawdzać profil sieciowy.
-    domain_profile_retries: 18
+    domain_profile_retries: 30
 
     # Odstęp pomiędzy próbami, w sekundach.
     domain_profile_delay: 10
@@ -101,80 +101,134 @@
         var: initial_domain_profile.result.Profiles
 
     ###########################################################################
-    # NAPRAWA NLA
+    # BEZPIECZNA NAPRAWA PROFILU DOMENOWEGO - DC
     ###########################################################################
 
-    - name: Zrestartuj usługę Netlogon
+    - name: Daj usługom domenowym czas na pełny start po aktualizacjach
+      ansible.builtin.pause:
+        seconds: 60
+      when: >-
+        not (
+          initial_domain_profile.result.DomainDetected |
+          default(false) |
+          bool
+        )
+
+    - name: Poczekaj aż DNS domeny i DC Locator będą gotowe
+      ansible.windows.win_powershell:
+        script: |
+          $domain = (Get-CimInstance Win32_ComputerSystem).Domain
+
+          $dnsOk = $false
+          $dcOk = $false
+          $netlogon = Get-Service Netlogon -ErrorAction SilentlyContinue
+
+          try {
+              Resolve-DnsName "_ldap._tcp.dc._msdcs.$domain" -Type SRV -ErrorAction Stop | Out-Null
+              $dnsOk = $true
+          }
+          catch {}
+
+          try {
+              & nltest.exe /dsgetdc:$domain | Out-Null
+              if ($LASTEXITCODE -eq 0) {
+                  $dcOk = $true
+              }
+          }
+          catch {}
+
+          $Ansible.Result = @{
+              Domain = $domain
+              DNSReady = $dnsOk
+              DCDiscoveryReady = $dcOk
+              NetlogonRunning = ($null -ne $netlogon -and $netlogon.Status -eq 'Running')
+          }
+
+          $Ansible.Changed = $false
+          $Ansible.Failed = -not (
+              $dnsOk -and
+              $dcOk -and
+              ($null -ne $netlogon -and $netlogon.Status -eq 'Running')
+          )
+      register: domain_stack_ready
+      changed_when: false
+      failed_when: false
+      retries: 30
+      delay: 10
+      until: >-
+        domain_stack_ready.result.DNSReady | default(false) | bool
+        and
+        domain_stack_ready.result.DCDiscoveryReady | default(false) | bool
+        and
+        domain_stack_ready.result.NetlogonRunning | default(false) | bool
+      when: >-
+        not (
+          initial_domain_profile.result.DomainDetected |
+          default(false) |
+          bool
+        )
+
+    - name: Pokaż gotowość usług domenowych
+      ansible.builtin.debug:
+        var: domain_stack_ready.result
+      when: >-
+        not (
+          initial_domain_profile.result.DomainDetected |
+          default(false) |
+          bool
+        )
+
+    - name: Zrestartuj usługę Netlogon przed NLA
       ansible.windows.win_service:
         name: Netlogon
         state: restarted
       register: netlogon_restart
       failed_when: false
-      when: >-
-        not (
-          initial_domain_profile.result.DomainDetected |
-          default(false) |
-          bool
-        )
+      when:
+        - not (initial_domain_profile.result.DomainDetected | default(false) | bool)
+        - domain_stack_ready.result.DNSReady | default(false) | bool
+        - domain_stack_ready.result.DCDiscoveryReady | default(false) | bool
 
-    - name: Poczekaj po restarcie usługi Netlogon
+    - name: Poczekaj po restarcie Netlogon
       ansible.builtin.pause:
-        seconds: 5
-      when: >-
-        not (
-          initial_domain_profile.result.DomainDetected |
-          default(false) |
-          bool
-        )
+        seconds: 10
+      when:
+        - not (initial_domain_profile.result.DomainDetected | default(false) | bool)
+        - domain_stack_ready.result.DNSReady | default(false) | bool
+        - domain_stack_ready.result.DCDiscoveryReady | default(false) | bool
 
-    - name: Zrestartuj usługę Network Location Awareness
+    - name: Pierwszy restart NlaSvc
       ansible.windows.win_service:
         name: NlaSvc
         state: restarted
-      register: nla_restart
+      register: nla_restart_first
       failed_when: false
-      when: >-
-        not (
-          initial_domain_profile.result.DomainDetected |
-          default(false) |
-          bool
-        )
+      when:
+        - not (initial_domain_profile.result.DomainDetected | default(false) | bool)
+        - domain_stack_ready.result.DNSReady | default(false) | bool
+        - domain_stack_ready.result.DCDiscoveryReady | default(false) | bool
 
-    - name: Poczekaj na ponowne połączenie po restarcie usług sieciowych
-      ansible.builtin.wait_for_connection:
-        timeout: 300
-        sleep: 10
-      register: connection_after_nla
-      ignore_errors: yes
-      when: >-
-        not (
-          initial_domain_profile.result.DomainDetected |
-          default(false) |
-          bool
-        )
+    - name: Daj NLA czas na ponowną klasyfikację sieci
+      ansible.builtin.pause:
+        seconds: 60
+      when:
+        - not (initial_domain_profile.result.DomainDetected | default(false) | bool)
+        - domain_stack_ready.result.DNSReady | default(false) | bool
+        - domain_stack_ready.result.DCDiscoveryReady | default(false) | bool
 
-    ###########################################################################
-    # SPRAWDZENIE PROFILU DOMENOWEGO PO RESTARCIE USŁUG
-    ###########################################################################
-
-    - name: Sprawdź profil sieci po restarcie usług
+    - name: Sprawdź profil po pierwszym restarcie NlaSvc
       ansible.windows.win_powershell:
         script: |
           $profiles = @(
               Get-NetConnectionProfile -ErrorAction SilentlyContinue |
               Where-Object {
-                  $_.IPv4Connectivity -notin @(
-                      'Disconnected',
-                      'NoTraffic'
-                  )
+                  $_.IPv4Connectivity -notin @('Disconnected','NoTraffic')
               }
           )
 
           $domainProfiles = @(
               $profiles |
-              Where-Object {
-                  $_.NetworkCategory -eq 'DomainAuthenticated'
-              }
+              Where-Object { $_.NetworkCategory -eq 'DomainAuthenticated' }
           )
 
           $Ansible.Result = @{
@@ -182,127 +236,59 @@
               Profiles = @(
                   $profiles | ForEach-Object {
                       @{
-                          InterfaceAlias    = $_.InterfaceAlias
-                          InterfaceIndex    = $_.InterfaceIndex
-                          Name              = $_.Name
-                          NetworkCategory   = [string]$_.NetworkCategory
-                          IPv4Connectivity  = [string]$_.IPv4Connectivity
-                          IPv6Connectivity  = [string]$_.IPv6Connectivity
+                          InterfaceAlias   = $_.InterfaceAlias
+                          InterfaceIndex   = $_.InterfaceIndex
+                          Name             = $_.Name
+                          NetworkCategory  = [string]$_.NetworkCategory
+                          IPv4Connectivity = [string]$_.IPv4Connectivity
+                          IPv6Connectivity = [string]$_.IPv6Connectivity
                       }
                   }
               )
           }
-
-          if ($domainProfiles.Count -gt 0) {
-              $Ansible.Changed = $false
-              $Ansible.Failed = $false
-          }
-          else {
-              $Ansible.Changed = $false
-              $Ansible.Failed = $true
-          }
+          $Ansible.Changed = $false
       register: domain_profile_after_services
       changed_when: false
       failed_when: false
-      retries: "{{ domain_profile_retries }}"
-      delay: "{{ domain_profile_delay }}"
-      until: >-
-        domain_profile_after_services.result.DomainDetected |
-        default(false) |
-        bool
-
-    ###########################################################################
-    # RESET KARTY SIECIOWEJ - TYLKO JEŚLI RESTART USŁUG NIE POMÓGŁ
-    ###########################################################################
-
-    - name: Wybierz aktywną kartę sieciową używaną przez trasę domyślną
-      ansible.windows.win_powershell:
-        script: |
-          $defaultRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-              Where-Object { $_.State -eq 'Alive' } |
-              Sort-Object RouteMetric, InterfaceMetric |
-              Select-Object -First 1
-
-          $adapter = $null
-          if ($null -ne $defaultRoute) {
-              $adapter = Get-NetAdapter -InterfaceIndex $defaultRoute.InterfaceIndex -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Status -eq 'Up' } |
-                  Select-Object -First 1
-          }
-
-          $Ansible.Result = @{
-              Found = $null -ne $adapter
-              Name = if ($null -ne $adapter) { $adapter.Name } else { $null }
-              InterfaceDescription = if ($null -ne $adapter) { $adapter.InterfaceDescription } else { $null }
-              InterfaceIndex = if ($null -ne $adapter) { $adapter.InterfaceIndex } else { $null }
-          }
-          $Ansible.Changed = $false
-      register: adapter_to_reset
-      changed_when: false
-      failed_when: false
       when: >-
         not (
-          domain_profile_after_services.result.DomainDetected |
+          initial_domain_profile.result.DomainDetected |
           default(false) |
           bool
         )
 
-    - name: Pokaż kartę wybraną do resetu
-      ansible.builtin.debug:
-        msg: >-
-          Do resetu wybrano kartę:
-          {{ adapter_to_reset.result.Name | default('nie znaleziono') }}
-          (index={{ adapter_to_reset.result.InterfaceIndex | default('n/a') }})
-      when: >-
-        not (
-          domain_profile_after_services.result.DomainDetected |
-          default(false) |
-          bool
-        )
-
-    - name: Zrestartuj aktywną kartę sieciową w tle
-      ansible.windows.win_powershell:
-        script: |
-          $index = {{ adapter_to_reset.result.InterfaceIndex | int }}
-          Restart-NetAdapter -InterfaceDescription (
-              Get-NetAdapter -InterfaceIndex $index -ErrorAction Stop
-          ).InterfaceDescription -Confirm:$false -ErrorAction Stop
-      async: 60
-      poll: 0
-      register: adapter_reset_async
+    - name: Drugi restart NlaSvc jeśli profil nadal nie jest domenowy
+      ansible.windows.win_service:
+        name: NlaSvc
+        state: restarted
+      register: nla_restart_second
       failed_when: false
       when:
-        - not (
-            domain_profile_after_services.result.DomainDetected |
-            default(false) |
-            bool
-          )
-        - adapter_to_reset.result.Found | default(false) | bool
+        - not (initial_domain_profile.result.DomainDetected | default(false) | bool)
+        - not (domain_profile_after_services.result.DomainDetected | default(false) | bool)
+        - domain_stack_ready.result.DNSReady | default(false) | bool
+        - domain_stack_ready.result.DCDiscoveryReady | default(false) | bool
 
-    - name: Poczekaj chwilę na rozpoczęcie resetu karty
+    - name: Poczekaj po drugim restarcie NlaSvc
       ansible.builtin.pause:
-        seconds: 10
+        seconds: 60
       when:
-        - not (
-            domain_profile_after_services.result.DomainDetected |
-            default(false) |
-            bool
-          )
-        - adapter_to_reset.result.Found | default(false) | bool
+        - not (initial_domain_profile.result.DomainDetected | default(false) | bool)
+        - not (domain_profile_after_services.result.DomainDetected | default(false) | bool)
+        - domain_stack_ready.result.DNSReady | default(false) | bool
+        - domain_stack_ready.result.DCDiscoveryReady | default(false) | bool
 
-    - name: Poczekaj na ponowne połączenie po resecie karty sieciowej
-      ansible.builtin.wait_for_connection:
-        timeout: 300
-        sleep: 10
-      register: connection_after_adapter_reset
-      ignore_errors: yes
-      when:
-        - not (
-            domain_profile_after_services.result.DomainDetected |
-            default(false) |
-            bool
-          )
-        - adapter_to_reset.result.Found | default(false) | bool
+    ###########################################################################
+    # RESET KARTY SIECIOWEJ WYŁĄCZONY NA DC
+    ###########################################################################
+
+    - name: Ustaw informację że reset karty sieciowej jest wyłączony na DC
+      ansible.builtin.set_fact:
+        adapter_to_reset:
+          result:
+            Found: false
+            Name: "wyłączony na DC"
+            InterfaceIndex: null
 
     ###########################################################################
     # KOŃCOWE SPRAWDZENIE PROFILU DOMENOWEGO
