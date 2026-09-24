@@ -14,11 +14,64 @@
       register: apt_update_result
       ignore_errors: yes
 
+    - name: Pobierz stan pakietów przed aktualizacją
+      ansible.builtin.shell: |
+        set -o pipefail
+        dpkg-query -W -f='${Package}\t${Version}\n' | sort
+      args:
+        executable: /bin/bash
+      register: packages_before
+      changed_when: false
+      failed_when: false
+
     - name: Aktualizacja pakietów
       ansible.builtin.apt:
         upgrade: yes
       register: upgrade_result
       ignore_errors: yes
+
+    - name: Pobierz stan pakietów po aktualizacji
+      ansible.builtin.shell: |
+        set -o pipefail
+        dpkg-query -W -f='${Package}\t${Version}\n' | sort
+      args:
+        executable: /bin/bash
+      register: packages_after
+      changed_when: false
+      failed_when: false
+
+    - name: Ustal listę zaktualizowanych pakietów
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        before_text = {{ packages_before.stdout | default('') | to_json }}
+        after_text = {{ packages_after.stdout | default('') | to_json }}
+
+        def parse(text):
+            result = {}
+            for line in text.splitlines():
+                if '\t' not in line:
+                    continue
+                package, version = line.split('\t', 1)
+                result[package] = version
+            return result
+
+        before = parse(before_text)
+        after = parse(after_text)
+
+        for package in sorted(after):
+            old_version = before.get(package)
+            new_version = after[package]
+
+            if old_version is None:
+                print(f"{package}\t-\t{new_version}\tINSTALLED")
+            elif old_version != new_version:
+                print(f"{package}\t{old_version}\t{new_version}\tUPDATED")
+        PY
+      args:
+        executable: /bin/bash
+      register: updated_packages
+      changed_when: false
+      failed_when: false
 
     - name: Sprawdź czy wymagany restart
       ansible.builtin.stat:
@@ -49,6 +102,7 @@
         subtype: html
         body: |
           {% set is_failed = (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) or (reboot_required.failed | default(false)) or (reboot_result.failed | default(false)) %}
+          {% set package_lines = updated_packages.stdout_lines | default([]) %}
           <html>
           <body style="margin:0;padding:0;background:#555;font-family:Arial,Helvetica,sans-serif;color:#ffffff;">
             <table width="100%" cellpadding="0" cellspacing="0" style="background:#555;padding:20px;">
@@ -115,6 +169,13 @@
                           <tr>
                             <td style="background:#252525;border:1px solid #b8b8b8;">Pakiety zaktualizowane</td>
                             <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">
+                              {{ package_lines | length }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">Zmiana pakietów</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">
                               {{ 'YES' if upgrade_result.changed | default(false) else 'NO' }}
                             </td>
                           </tr>
@@ -165,6 +226,42 @@
                           <tr>
                             <td style="background:#252525;border:1px solid #b8b8b8;">Błąd restartu</td>
                             <td style="background:#252525;border:1px solid #b8b8b8;">{{ reboot_result.msg }}</td>
+                          </tr>
+                          {% endif %}
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:0 24px 20px 24px;">
+                        <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:13px;color:#ffffff;">
+                          <tr>
+                            <th colspan="4" align="left" style="background:#505050;border:1px solid #b8b8b8;font-size:14px;">
+                              Zainstalowane / zaktualizowane pakiety
+                            </th>
+                          </tr>
+                          <tr>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Pakiet</th>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Poprzednia wersja</th>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Nowa wersja</th>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Status</th>
+                          </tr>
+
+                          {% for line in package_lines %}
+                          {% set fields = line.split('\t') %}
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ fields[0] | default('N/A') }}</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ fields[1] | default('N/A') }}</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ fields[2] | default('N/A') }}</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;color:#66ff66;font-weight:bold;">{{ fields[3] | default('UPDATED') }}</td>
+                          </tr>
+                          {% endfor %}
+
+                          {% if package_lines | length == 0 %}
+                          <tr>
+                            <td colspan="4" style="background:#252525;border:1px solid #b8b8b8;color:#d0d0d0;">
+                              Brak zainstalowanych lub zaktualizowanych pakietów.
+                            </td>
                           </tr>
                           {% endif %}
                         </table>
