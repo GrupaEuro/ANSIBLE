@@ -688,6 +688,67 @@
                       </td>
                     </tr>
 
+                    <!-- Lista aktualizacji -->
+                    <tr>
+                      <td style="padding:0 24px 20px 24px;">
+
+                        <table width="100%" cellpadding="8" cellspacing="0"
+                               style="border-collapse:collapse;font-size:14px;">
+
+                          <tr>
+                            <th align="left"
+                                style="background:#eef1f4;border:1px solid #dfe3e8;">
+                              KB
+                            </th>
+
+                            <th align="left"
+                                style="background:#eef1f4;border:1px solid #dfe3e8;">
+                              Aktualizacja
+                            </th>
+
+                            <th align="left"
+                                style="background:#eef1f4;border:1px solid #dfe3e8;">
+                              Status
+                            </th>
+                          </tr>
+
+                          {% for update_id, update in (win_update_result.updates | default({})).items() %}
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">
+                              {{ update.kb | default([]) | join(', ') }}
+                            </td>
+
+                            <td style="border:1px solid #dfe3e8;">
+                              {{ update.title | default('Brak nazwy') }}
+                            </td>
+
+                            <td style="
+                                border:1px solid #dfe3e8;
+                                color:{{ '#107c10' if update.installed | default(false) else '#c00000' }};
+                                font-weight:bold;">
+                              {{
+                                'ZAINSTALOWANO'
+                                if update.installed | default(false)
+                                else
+                                'NIE ZAINSTALOWANO'
+                              }}
+                            </td>
+                          </tr>
+                          {% endfor %}
+
+                          {% if win_update_result.updates | default({}) | length == 0 %}
+                          <tr>
+                            <td colspan="3"
+                                style="border:1px solid #dfe3e8;color:#666;">
+                              Brak aktualizacji do wyświetlenia.
+                            </td>
+                          </tr>
+                          {% endif %}
+
+                        </table>
+                      </td>
+                    </tr>
+
                     <!-- Profil sieciowy -->
                     <tr>
                       <td style="padding:0 24px 20px 24px;">
