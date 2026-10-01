@@ -10,12 +10,15 @@
     # Odstęp pomiędzy próbami, w sekundach.
     domain_profile_delay: 10
 
+    # Log modułu win_updates na hoście Windows.
+    windows_update_log_path: 'C:\Windows\Temp\ansible-win-updates.log'
+
   tasks:
     ###########################################################################
     # WINDOWS UPDATE
     ###########################################################################
 
-    - name: Zainstaluj aktualizacje Windows i automatycznie zrestartuj serwer
+    - name: Zainstaluj aktualizacje Windows jako SYSTEM i automatycznie zrestartuj serwer
       ansible.windows.win_updates:
         category_names:
           - CriticalUpdates
@@ -24,15 +27,75 @@
         state: installed
         reboot: yes
         reboot_timeout: 3600
-      register: win_update_result
-      ignore_errors: yes
+        log_path: "{{ windows_update_log_path }}"
+      become: true
+      become_method: runas
+      become_user: SYSTEM
+      register: win_update_attempt
+      failed_when: false
 
     - name: Poczekaj na dostępność serwera po aktualizacjach
       ansible.builtin.wait_for_connection:
         timeout: 600
         sleep: 15
       register: connection_after_updates
-      ignore_errors: yes
+      failed_when: false
+
+    # Jeżeli proces pomocniczy win_updates zniknął podczas pollingu, nie zakładamy
+    # od razu, że sama aktualizacja Windows się nie udała. Najpierw sprawdzamy
+    # faktyczny stan Windows Update po odzyskaniu połączenia.
+    - name: Zweryfikuj stan Windows Update po błędzie modułu
+      ansible.windows.win_updates:
+        category_names:
+          - CriticalUpdates
+          - SecurityUpdates
+          - UpdateRollups
+        state: searched
+        reboot: no
+        log_path: "{{ windows_update_log_path }}"
+      become: true
+      become_method: runas
+      become_user: SYSTEM
+      register: win_update_verify
+      failed_when: false
+      when: win_update_attempt.failed | default(false) | bool
+
+    - name: Ustal czy błąd Windows Update został bezpiecznie odzyskany
+      ansible.builtin.set_fact:
+        win_update_recovered: >-
+          {{
+            (win_update_attempt.failed | default(false) | bool)
+            and not (win_update_verify.failed | default(true) | bool)
+            and ((win_update_verify.failed_update_count | default(0) | int) == 0)
+            and ((win_update_verify.found_update_count | default(0) | int) == 0)
+          }}
+
+    - name: Zbuduj końcowy wynik Windows Update
+      ansible.builtin.set_fact:
+        win_update_result: >-
+          {{
+            (
+              win_update_attempt
+              | combine(
+                  {
+                    'failed': false,
+                    'recovered': true,
+                    'original_msg': win_update_attempt.msg | default('brak komunikatu'),
+                    'msg': 'Pierwotny moduł win_updates zakończył się błędem, ale kontrola po odzyskaniu połączenia potwierdziła brak oczekujących i nieudanych aktualizacji. Błąd uznano za przejściowy.',
+                    'found_update_count': win_update_verify.found_update_count | default(0),
+                    'failed_update_count': win_update_verify.failed_update_count | default(0),
+                    'reboot_required': win_update_verify.reboot_required | default(false)
+                  },
+                  recursive=True
+                )
+            )
+            if win_update_recovered
+            else
+            (
+              win_update_attempt
+              | combine({'recovered': false}, recursive=True)
+            )
+          }}
 
     - name: Pokaż wynik aktualizacji
       ansible.builtin.debug:
@@ -411,6 +474,13 @@
             bool
           }}
 
+        update_recovered: >-
+          {{
+            win_update_result.recovered |
+            default(false) |
+            bool
+          }}
+
         domain_profile_detected: >-
           {{
             final_domain_profile.result.DomainDetected |
@@ -672,6 +742,16 @@
                             </td>
                           </tr>
 
+                          <tr>
+                            <td style="border:1px solid #dfe3e8;">
+                              Odzyskanie po błędzie procesu win_updates
+                            </td>
+
+                            <td style="border:1px solid #dfe3e8;font-weight:bold;">
+                              {{ 'TAK - stan zweryfikowany ponownie' if update_recovered else 'NIE' }}
+                            </td>
+                          </tr>
+
                           {% if win_update_result.msg is defined %}
                           <tr>
                             <td style="border:1px solid #dfe3e8;">
@@ -930,6 +1010,11 @@
         msg: >-
           Windows Update na hoście {{ ansible_hostname }} zakończył się błędem:
           {{ win_update_result.msg | default('nieznany błąd') }}
+          {% if win_update_verify is defined and not (win_update_verify.skipped | default(false) | bool) %}
+          Kontrola po błędzie: found={{ win_update_verify.found_update_count | default('n/a') }},
+          failed={{ win_update_verify.failed_update_count | default('n/a') }},
+          verify_failed={{ win_update_verify.failed | default('n/a') }}.
+          {% endif %}
       when: update_failed
 
     - name: Zakończ playbook błędem, jeśli nie wykryto profilu domenowego
