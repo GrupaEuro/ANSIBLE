@@ -1,0 +1,249 @@
+---
+- name: Aktualizacja systemu
+  hosts: Linux
+  gather_facts: yes
+  become: true
+  become_user: root
+  become_method: sudo
+
+  tasks:
+    - name: Aktualizacja listy pakietów
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      register: apt_update_result
+      ignore_errors: yes
+
+    - name: Pobierz stan pakietów przed aktualizacją
+      ansible.builtin.shell: |
+        set -o pipefail
+        dpkg-query -W -f='${Package}\t${Version}\n' | sort
+      args:
+        executable: /bin/bash
+      register: packages_before
+      changed_when: false
+      failed_when: false
+
+    - name: Aktualizacja pakietów
+      ansible.builtin.apt:
+        upgrade: yes
+      register: upgrade_result
+      ignore_errors: yes
+
+    - name: Pobierz stan pakietów po aktualizacji
+      ansible.builtin.shell: |
+        set -o pipefail
+        dpkg-query -W -f='${Package}\t${Version}\n' | sort
+      args:
+        executable: /bin/bash
+      register: packages_after
+      changed_when: false
+      failed_when: false
+
+    - name: Ustal listę zaktualizowanych pakietów
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        before_text = {{ packages_before.stdout | default('') | to_json }}
+        after_text = {{ packages_after.stdout | default('') | to_json }}
+
+        def parse(text):
+            result = {}
+            for line in text.splitlines():
+                if '\t' not in line:
+                    continue
+                package, version = line.split('\t', 1)
+                result[package] = version
+            return result
+
+        before = parse(before_text)
+        after = parse(after_text)
+
+        for package in sorted(after):
+            old_version = before.get(package)
+            new_version = after[package]
+
+            if old_version is None:
+                print(f"{package}\t-\t{new_version}\tINSTALLED")
+            elif old_version != new_version:
+                print(f"{package}\t{old_version}\t{new_version}\tUPDATED")
+        PY
+      args:
+        executable: /bin/bash
+      register: updated_packages
+      changed_when: false
+      failed_when: false
+
+
+  post_tasks:
+    - name: Wyślij raport e-mail
+      delegate_to: localhost
+      community.general.mail:
+        host: "{{ lookup('env', 'SMTP_HOST') }}"
+        port: "{{ lookup('env', 'SMTP_PORT') | int }}"
+        secure: starttls
+        username: "{{ lookup('env', 'SMTP_USER') }}"
+        password: "{{ lookup('env', 'SMTP_PASS') }}"
+        from: "{{ lookup('env', 'SMTP_FROM') }}"
+        to: "{{ lookup('env', 'SMTP_TO') }}"
+        subject: "[{{ 'Failed' if (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) else 'Success' }}][{{ lookup('env', 'COMPANY_NAME') }}] Linux Update - {{ ansible_hostname | default(inventory_hostname) }}"
+        subtype: html
+        body: |
+          {% set is_failed = (apt_update_result.failed | default(false)) or (upgrade_result.failed | default(false)) %}
+          {% set package_lines = updated_packages.stdout_lines | default([]) %}
+          <html>
+          <body style="margin:0;padding:0;background:#555;font-family:Arial,Helvetica,sans-serif;color:#ffffff;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#555;padding:20px;">
+              <tr>
+                <td align="center">
+
+                  <table width="720" cellpadding="0" cellspacing="0" style="background:#252525;border:1px solid #b8b8b8;border-collapse:collapse;">
+
+                    <tr>
+                      <td style="background:{{ '#b00000' if is_failed else '#007a0a' }};color:#ffffff;padding:18px 24px;font-size:22px;font-weight:bold;border-bottom:1px solid #b8b8b8;">
+                        Linux Update Report
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:16px 24px;border-bottom:1px solid #b8b8b8;">
+                        <span style="display:inline-block;background:{{ '#5a1f1f' if is_failed else '#315f38' }};color:{{ '#ffb3b3' if is_failed else '#7cff7c' }};border:1px solid {{ '#d06060' if is_failed else '#8fd18f' }};padding:6px 14px;font-weight:bold;">
+                          {{ 'FAILED' if is_failed else 'SUCCESS' }}
+                        </span>
+                        <span style="margin-left:12px;color:#ffffff;">
+                          {{ 'Aktualizacja zakończona błędem' if is_failed else 'Aktualizacja zakończona poprawnie' }}
+                        </span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:20px 24px 10px 24px;">
+                        <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:14px;color:#ffffff;">
+                          <tr>
+                            <td style="width:220px;background:#505050;border:1px solid #b8b8b8;font-weight:bold;">Host</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">{{ ansible_hostname | default(inventory_hostname) }}</td>
+                          </tr>
+                          <tr>
+                            <td style="background:#505050;border:1px solid #b8b8b8;font-weight:bold;">IP</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">{{ ansible_default_ipv4.address | default(inventory_hostname) }}</td>
+                          </tr>
+                          <tr>
+                            <td style="background:#505050;border:1px solid #b8b8b8;font-weight:bold;">System</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">{{ ansible_distribution | default('Linux') }} {{ ansible_distribution_version | default('') }}</td>
+                          </tr>
+                          <tr>
+                            <td style="background:#505050;border:1px solid #b8b8b8;font-weight:bold;">Kernel</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">{{ ansible_kernel | default('N/A') }}</td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:10px 24px 20px 24px;">
+                        <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:14px;color:#ffffff;">
+                          <tr>
+                            <th align="left" style="background:#505050;border:1px solid #b8b8b8;">Element</th>
+                            <th align="left" style="background:#505050;border:1px solid #b8b8b8;">Wynik</th>
+                          </tr>
+
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">Aktualizacja listy pakietów</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">
+                              {{ 'FAILED' if apt_update_result.failed | default(false) else 'OK' }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">Pakiety zaktualizowane</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">
+                              {{ package_lines | length }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">Zmiana pakietów</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">
+                              {{ 'YES' if upgrade_result.changed | default(false) else 'NO' }}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;font-weight:bold;">Status</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;color:{{ '#ff6666' if is_failed else '#66ff66' }};font-weight:bold;">
+                              {{ 'FAILED' if is_failed else 'SUCCESS' }}
+                            </td>
+                          </tr>
+
+                          {% if apt_update_result.failed | default(false) and apt_update_result.msg is defined %}
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">Błąd aktualizacji listy</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ apt_update_result.msg }}</td>
+                          </tr>
+                          {% endif %}
+
+                          {% if upgrade_result.failed | default(false) and upgrade_result.msg is defined %}
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">Błąd aktualizacji</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ upgrade_result.msg }}</td>
+                          </tr>
+                          {% endif %}
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="padding:0 24px 20px 24px;">
+                        <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:13px;color:#ffffff;">
+                          <tr>
+                            <th colspan="4" align="left" style="background:#505050;border:1px solid #b8b8b8;font-size:14px;">
+                              Zainstalowane / zaktualizowane pakiety
+                            </th>
+                          </tr>
+                          <tr>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Pakiet</th>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Poprzednia wersja</th>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Nowa wersja</th>
+                            <th align="left" style="background:#404040;border:1px solid #b8b8b8;">Status</th>
+                          </tr>
+
+                          {% for line in package_lines %}
+                          {% set fields = line.split('\t') %}
+                          <tr>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ fields[0] | default('N/A') }}</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ fields[1] | default('N/A') }}</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;">{{ fields[2] | default('N/A') }}</td>
+                            <td style="background:#252525;border:1px solid #b8b8b8;color:#66ff66;font-weight:bold;">{{ fields[3] | default('UPDATED') }}</td>
+                          </tr>
+                          {% endfor %}
+
+                          {% if package_lines | length == 0 %}
+                          <tr>
+                            <td colspan="4" style="background:#252525;border:1px solid #b8b8b8;color:#d0d0d0;">
+                              Brak zainstalowanych lub zaktualizowanych pakietów.
+                            </td>
+                          </tr>
+                          {% endif %}
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td style="background:#505050;border-top:1px solid #b8b8b8;padding:12px 24px;color:#d0d0d0;font-size:12px;">
+                        Report generated automatically by Ansible Semaphore.
+                      </td>
+                    </tr>
+
+                  </table>
+
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+
+    - name: Oznacz zadanie jako nieudane, jeśli aktualizacja się nie udała
+      ansible.builtin.fail:
+        msg: "Linux Update zakończony błędem."
+      when:
+        - (apt_update_result.failed | default(false)) or
+          (upgrade_result.failed | default(false))
